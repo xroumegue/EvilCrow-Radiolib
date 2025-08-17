@@ -113,6 +113,25 @@ typedef struct
 
 const int rssi_threshold = -75;
 
+void toggleLED(void * parameter){
+  int led = 32;
+  pinMode(led, OUTPUT);
+  for(;;){ // infinite loop
+
+    // Turn the LED on
+    digitalWrite(led, HIGH);
+
+    // Pause the task for 500ms
+    vTaskDelay(1500 / portTICK_PERIOD_MS);
+
+    // Turn the LED off
+    digitalWrite(led, LOW);
+
+    // Pause the task again for 500ms
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial) {};
@@ -137,9 +156,17 @@ void setup() {
 
   delay(100);
 
+  xTaskCreate(
+    toggleLED,    // Function that should be called
+    "Toggle LED",   // Name of the task (for debugging)
+    1000,            // Stack size (bytes)
+    NULL,            // Parameter to pass
+    1,               // Task priority
+    NULL             // Task handle
+  );
 
   radio.begin();
-  Serial.println("Frequency Analayzer Started!");
+  Serial.println("Frequency Analyzer Started!");
 }
 
 void loop() {
