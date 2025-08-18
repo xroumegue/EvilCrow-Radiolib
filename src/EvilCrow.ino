@@ -1,8 +1,7 @@
 #include <Arduino.h>
+#include <FreeRTOS_Shell.h>
 #include <RadioLib.h>
 #include <SPI.h>
-
-#define RADIOLIB_CHECK_PARAMS (0)
 
 #ifndef SPI_CLK_FREQ
 #define SPI_CLK_FREQ 1000000
@@ -113,6 +112,23 @@ typedef struct
 
 const int rssi_threshold = -75;
 
+void FreeRTOS_ShellOutput(const char *buffer, int length) {
+  Serial.write(buffer, length);
+}
+
+void serialEvent(void) {
+  while (Serial.available() > 0) {
+    uint8_t incomingByte = Serial.read();
+    FreeRTOS_ShellIRQHandle(incomingByte);
+  }
+}
+
+void FreeRTOS_Shell_init(void) {
+  Serial.begin(115200);
+  while (!Serial) {
+  };
+}
+
 void toggleLED(void * parameter){
   int led = 32;
   pinMode(led, OUTPUT);
@@ -133,8 +149,25 @@ void toggleLED(void * parameter){
 }
 
 void setup() {
-  Serial.begin(115200);
-  while (!Serial) {};
+  xTaskCreate(
+    toggleLED,    // Function that should be called
+    "Toggle LED",   // Name of the task (for debugging)
+    1008,            // Stack size (bytes)
+    NULL,            // Parameter to pass
+    1,               // Task priority
+    NULL             // Task handle
+  );
+
+  xTaskCreate(
+    FreeRTOS_Shell,
+    "Shell",
+    2048,
+    NULL,
+    100,
+    NULL
+  );
+
+#if 0
 #ifdef USE_RADIO1
 #ifndef USE_RADIO2
   pinMode(CC1101_MOD2_CSN, OUTPUT);
@@ -156,20 +189,14 @@ void setup() {
 
   delay(100);
 
-  xTaskCreate(
-    toggleLED,    // Function that should be called
-    "Toggle LED",   // Name of the task (for debugging)
-    1000,            // Stack size (bytes)
-    NULL,            // Parameter to pass
-    1,               // Task priority
-    NULL             // Task handle
-  );
 
   radio.begin();
   Serial.println("Frequency Analyzer Started!");
+#endif
 }
 
 void loop() {
+#if 0
   int rssi;
   FrequencyRSSI frequency_rssi = {
     .frequency_coarse = 0, .rssi_coarse = -100, .frequency_fine = 0, .rssi_fine = -100
@@ -220,7 +247,7 @@ void loop() {
   else if (frequency_rssi.rssi_coarse > rssi_threshold) {
     Serial.printf("COARSE      Frequency: %.2f  RSSI: %d\n", (float)frequency_rssi.frequency_coarse / 1000000.0, frequency_rssi.rssi_coarse);
   }
-  
+  #endif
   delay(10);
 }
 
