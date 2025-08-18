@@ -163,7 +163,7 @@ void setup() {
     "Shell",
     2048,
     NULL,
-    100,
+    10,
     NULL
   );
 
