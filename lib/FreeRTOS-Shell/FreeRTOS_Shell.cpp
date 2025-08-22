@@ -85,11 +85,11 @@ void FreeRTOS_Shell(void *params) {
                            strlen(FREERTOS_SHELL_USER_INFO));
     } else if (!lineOver) {
       /* backspace */
-      if (((recvChar == '\n') || (recvChar == 0x7f)) && isInputBufferEmpty) {
+      if (((recvChar == '\n') || (recvChar == '\b')) && isInputBufferEmpty) {
         __asm__("nop");
       }
       /* backspace*/
-      else if (recvChar == 0x7f && !isInputBufferEmpty) {
+      else if (recvChar == '\b' && !isInputBufferEmpty) {
         *--inputBuffer_ptr = 0;
         FreeRTOS_ShellOutput(&recvChar, 1);
       }
