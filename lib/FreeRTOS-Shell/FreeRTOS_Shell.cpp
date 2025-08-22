@@ -85,7 +85,7 @@ void FreeRTOS_Shell(void *params) {
                            strlen(FREERTOS_SHELL_USER_INFO));
     } else if (!lineOver) {
       /* backspace */
-      if (recvChar == 0x7f && isInputBufferEmpty) {
+      if (((recvChar == '\n') || (recvChar == 0x7f)) && isInputBufferEmpty) {
         __asm__("nop");
       }
       /* backspace*/
@@ -114,7 +114,6 @@ static int listAllThreadCallCount = 0;
 static BaseType_t listAllThread(char *pcWriteBuffer, size_t xWriteBufferLen,
                                 const char *pcCommandString) {
   BaseType_t ret = pdTRUE;
-#if 0
   UBaseType_t taskNum = uxTaskGetNumberOfTasks();
   int len = taskNum * FREERTOS_SHELL_EACH_TASKINFO_MAX_SIZE;
 
@@ -136,7 +135,6 @@ static BaseType_t listAllThread(char *pcWriteBuffer, size_t xWriteBufferLen,
 
 end:
   free(_buffer);
-#endif
   return ret;
 }
 
