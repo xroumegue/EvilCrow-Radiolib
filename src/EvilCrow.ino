@@ -112,11 +112,16 @@ typedef struct
 
 const int rssi_threshold = -75;
 
+
+static const uint32_t uartRxTimeout = 1;
+static const uint32_t uartBaudrate = 115200;
+
 void FreeRTOS_ShellOutput(const char *buffer, int length) {
   Serial.write(buffer, length);
 }
 
-void serialEvent(void) {
+//void serialEvent(void) {
+void FreeRTOS_Shell_cb(void) {
   while (Serial.available() > 0) {
     uint8_t incomingByte = Serial.read();
     FreeRTOS_ShellIRQHandle(incomingByte);
@@ -124,9 +129,13 @@ void serialEvent(void) {
 }
 
 void FreeRTOS_Shell_init(void) {
-  Serial.begin(115200);
+  Serial.setRxBufferSize(512);
+  Serial.begin(uartBaudrate);
   while (!Serial) {
   };
+
+  Serial.setRxTimeout(uartRxTimeout);
+  Serial.onReceive(FreeRTOS_Shell_cb, true);
 }
 
 void toggleLED(void * parameter){
