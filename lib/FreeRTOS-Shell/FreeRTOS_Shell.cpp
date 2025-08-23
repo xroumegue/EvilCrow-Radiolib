@@ -110,31 +110,39 @@ void FreeRTOS_ShellIRQHandle(uint8_t recvData) {
   xQueueSendToBackFromISR(FreeRTOS_ShellRecvQueue, &recvData, NULL);
 }
 
-static int listAllThreadCallCount = 0;
+static size_t offsetInBuffer = 0;
+static size_t remaining = 0;
+static char *buffer = NULL;
+
 static BaseType_t listAllThread(char *pcWriteBuffer, size_t xWriteBufferLen,
                                 const char *pcCommandString) {
   BaseType_t ret = pdTRUE;
-  UBaseType_t taskNum = uxTaskGetNumberOfTasks();
-  int len = taskNum * FREERTOS_SHELL_EACH_TASKINFO_MAX_SIZE;
-
-  char *_buffer = (char *)malloc(len * sizeof(char));
-  vTaskList(_buffer);
-  if (len > xWriteBufferLen * (listAllThreadCallCount + 1)) {
-    /* Insufficient buffer size, should be called more than once */
-    memcpy(pcWriteBuffer, _buffer + xWriteBufferLen * listAllThreadCallCount,
-           xWriteBufferLen);
-    listAllThreadCallCount++;
-    ret = pdTRUE;
+  if (buffer == NULL) {
+    UBaseType_t taskNum = uxTaskGetNumberOfTasks();
+    int len = taskNum * FREERTOS_SHELL_EACH_TASKINFO_MAX_SIZE;
+    buffer = (char *)malloc(len * sizeof(char));
+    vTaskList(buffer);
+    remaining = strlen(buffer);
+    offsetInBuffer = 0;
   } else {
-    /* sufficient buffer size */
-    memcpy(pcWriteBuffer, _buffer + xWriteBufferLen * listAllThreadCallCount,
-           xWriteBufferLen * (listAllThreadCallCount + 1) - len);
-    listAllThreadCallCount--;
-    ret = pdFALSE;
+    if (remaining) {
+      stpncpy(pcWriteBuffer, buffer + offsetInBuffer, xWriteBufferLen - 1);
+      size_t len = strlen(pcWriteBuffer);
+      offsetInBuffer += len;
+      remaining -= len;
+    }
   }
 
-end:
-  free(_buffer);
+  if (remaining > 0) {
+    ret = pdTRUE;
+  } else {
+    ret = pdFALSE;
+    free(buffer);
+    buffer = NULL;
+    remaining = 0;
+    offsetInBuffer = 0;
+  }
+
   return ret;
 }
 
