@@ -135,17 +135,17 @@ static BaseType_t cc1101_init(int id) {
   return pdFALSE;
 }
 
-static BaseType_t cc1101_scan(CC1101 *radio) {
+static BaseType_t cc1101_scan(CC1101 *radio, FrequencyRSSI *frequency_rssi) {
   int rssi;
-  FrequencyRSSI frequency_rssi = {.frequency_coarse = 0,
-                                  .rssi_coarse = -100,
-                                  .frequency_fine = 0,
-                                  .rssi_fine = -100};
+  *frequency_rssi = {.frequency_coarse = 0,
+                     .rssi_coarse = -100,
+                     .frequency_fine = 0,
+                     .rssi_fine = -100};
 
   // First stage: coarse scan
   radio->setRxBandwidth(
       650); // 58, 68, 81, 102, 116, 135, 162, 203, 232, 270, 325, 406, 464,
-            // 541, 650 and 812 kHz    (81kHz seems to work best for me)
+  // 541, 650 and 812 kHz    (81kHz seems to work best for me)
   size_t array_size =
       sizeof(subghz_frequency_list) / sizeof(subghz_frequency_list[0]);
   for (size_t i = 0; i < array_size; i++) {
@@ -159,44 +159,30 @@ static BaseType_t cc1101_scan(CC1101 *radio) {
       delay(2);
       rssi = radio->getRSSI();
 
-      if (frequency_rssi.rssi_coarse < rssi) {
-        frequency_rssi.rssi_coarse = rssi;
-        frequency_rssi.frequency_coarse = frequency;
+      if (frequency_rssi->rssi_coarse < rssi) {
+        frequency_rssi->rssi_coarse = rssi;
+        frequency_rssi->frequency_coarse = frequency;
       }
     }
   }
 
   // Second stage: fine scan
-  if (frequency_rssi.rssi_coarse > rssi_threshold) {
+  if (frequency_rssi->rssi_coarse > rssi_threshold) {
     // for example -0.3 ... 433.92 ... +0.3 step 20KHz
     radio->setRxBandwidth(58);
-    for (uint32_t i = frequency_rssi.frequency_coarse - 300000;
-         i < frequency_rssi.frequency_coarse + 300000; i += 20000) {
+    for (uint32_t i = frequency_rssi->frequency_coarse - 300000;
+         i < frequency_rssi->frequency_coarse + 300000; i += 20000) {
       uint32_t frequency = i;
       radio->setFrequency((float)frequency / 1000000.0);
       radio->receiveDirect();
       delay(2);
       rssi = radio->getRSSI();
 
-      if (frequency_rssi.rssi_fine < rssi) {
-        frequency_rssi.rssi_fine = rssi;
-        frequency_rssi.frequency_fine = frequency;
+      if (frequency_rssi->rssi_fine < rssi) {
+        frequency_rssi->rssi_fine = rssi;
+        frequency_rssi->frequency_fine = frequency;
       }
     }
-  }
-
-  // Deliver results fine
-  if (frequency_rssi.rssi_fine > rssi_threshold) {
-    Serial.printf("FINE        Frequency: %.2f  RSSI: %d\n",
-                  (float)frequency_rssi.frequency_fine / 1000000.0,
-                  frequency_rssi.rssi_fine);
-  }
-
-  // Deliver results coarse
-  else if (frequency_rssi.rssi_coarse > rssi_threshold) {
-    Serial.printf("COARSE      Frequency: %.2f  RSSI: %d\n",
-                  (float)frequency_rssi.frequency_coarse / 1000000.0,
-                  frequency_rssi.rssi_coarse);
   }
 
   return pdFALSE;
@@ -225,11 +211,63 @@ static BaseType_t cc1101_init_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
 
   return pdFALSE;
 }
+
 FREERTOS_SHELL_CMD_REGISTER("cc1101_init", "Init CC1101", cc1101_init_cmd, 1);
 
 static BaseType_t cc1101_scan_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
                                   const char *pcCommandString) {
-  cc1101_scan(&radio);
+  int id;
+  static int scan_loop = 0;
+  size_t len = 0;
+  static TickType_t startTime;
+  if (scan_loop <= 0) {
+    FreeRTOS_CLIGetParameterAsInt(pcCommandString, 1, &id);
+    FreeRTOS_CLIGetParameterAsInt(pcCommandString, 2, &scan_loop);
+
+    if ((id < 1) || (id > 2)) {
+      Serial.print(F("[E] [CC1101] Wrong module id ... "));
+      return pdFALSE;
+    }
+
+    cc1101_init(id);
+
+    snprintf(pcWriteBuffer, xWriteBufferLen,
+             "[CC1101] Module %d initialized!\n "
+             "[CC1101] Frequency scanning in progress (%d times)... \n",
+             id, scan_loop);
+    len = strlen(pcWriteBuffer);
+    xWriteBufferLen -= len;
+    pcWriteBuffer += len;
+    startTime = pdTICKS_TO_MS(xTaskGetTickCount());
+  }
+
+  while (scan_loop-- > 0) {
+    FrequencyRSSI rssi_scan;
+    cc1101_scan(&radio, &rssi_scan);
+    if (rssi_scan.rssi_fine > rssi_threshold) {
+      // Deliver results fine
+      len = snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "FINE        Frequency: %.2f  RSSI: %d\n",
+                     (float)rssi_scan.frequency_fine / 1000000.0,
+                     rssi_scan.rssi_fine);
+    } else if (rssi_scan.rssi_coarse > rssi_threshold) {
+      // Deliver results coarse
+      len = snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "COARSE      Frequency: %.2f  RSSI: %d\n",
+                     (float)rssi_scan.frequency_coarse / 1000000.0,
+                     rssi_scan.rssi_coarse);
+    }
+    if (len)
+      return pdTRUE;
+  }
+
+  scan_loop = 0;
+
+  TickType_t endTime = pdTICKS_TO_MS(xTaskGetTickCount());
+  snprintf(pcWriteBuffer, xWriteBufferLen,
+           "[CC1101] Scanning completed (%u ms)\n", endTime - startTime);
+
   return pdFALSE;
 }
-FREERTOS_SHELL_CMD_REGISTER("cc1101_scan", "Scan CC1101", cc1101_scan_cmd, -1);
+
+FREERTOS_SHELL_CMD_REGISTER("cc1101_scan", "Scan CC1101", cc1101_scan_cmd, 2);
