@@ -339,7 +339,6 @@ static BaseType_t prvHelpCommand(char *pcWriteBuffer, size_t xWriteBufferLen,
   return xReturn;
 }
 /*-----------------------------------------------------------*/
-
 static int8_t prvGetNumberOfParameters(const char *pcCommandString) {
   int8_t cParameters = 0;
   BaseType_t xLastCharacterWasSpace = pdFALSE;
@@ -367,4 +366,15 @@ static int8_t prvGetNumberOfParameters(const char *pcCommandString) {
   /* The value returned is one less than the number of space delimited words,
    * as the first word should be the command itself. */
   return cParameters;
+}
+
+BaseType_t FreeRTOS_CLIGetParameterAsInt(const char *pcCommandString,
+                                         UBaseType_t uxWantedParameter,
+                                         int *paramInt) {
+  BaseType_t idLen = sizeof(int);
+  const char *idStr =
+      FreeRTOS_CLIGetParameter(pcCommandString, uxWantedParameter, &idLen);
+  *paramInt = atoi(idStr);
+
+  return pdFALSE;
 }

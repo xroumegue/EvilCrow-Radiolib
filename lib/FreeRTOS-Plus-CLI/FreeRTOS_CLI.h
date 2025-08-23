@@ -133,6 +133,10 @@ const char *FreeRTOS_CLIGetParameter(const char *pcCommandString,
                                      UBaseType_t uxWantedParameter,
                                      BaseType_t *pxParameterStringLength);
 
+BaseType_t FreeRTOS_CLIGetParameterAsInt(const char *pcCommandString,
+                                         UBaseType_t uxWantedParameter,
+                                         int *paramInt);
+
 /* *INDENT-OFF* */
 #ifdef __cplusplus
 }
