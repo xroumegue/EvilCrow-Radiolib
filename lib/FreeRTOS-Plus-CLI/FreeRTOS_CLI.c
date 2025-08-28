@@ -371,7 +371,7 @@ static int8_t prvGetNumberOfParameters(const char *pcCommandString) {
 BaseType_t FreeRTOS_CLIGetParameterAsInt(const char *pcCommandString,
                                          UBaseType_t uxWantedParameter,
                                          int *paramInt) {
-  BaseType_t idLen = sizeof(int);
+  BaseType_t idLen;
   const char *idStr =
       FreeRTOS_CLIGetParameter(pcCommandString, uxWantedParameter, &idLen);
   *paramInt = atoi(idStr);
