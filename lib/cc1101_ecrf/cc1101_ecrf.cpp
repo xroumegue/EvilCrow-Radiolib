@@ -26,22 +26,18 @@ static const int spiClk = SPI_CLK_FREQ;
 #define CC1101_MOD2_IRQ CC1101_MOD2_GDO0
 #define CC1101_MOD2_GPIO RADIOLIB_NC
 
-#define USE_RADIO1
-
 #define MAX(x, y) (x < y ? y : x)
 #define MIN(x, y) (x < y ? x : y)
 
 SPIClass spi0 = SPIClass(HSPI);
-#ifdef USE_RADIO1
-CC1101 radio =
+
+static CC1101 radios[2] = {
     new Module(CC1101_MOD1_CSN, CC1101_MOD1_IRQ, RADIOLIB_NC, CC1101_MOD1_GPIO,
-               spi0, SPISettings(spiClk, MSBFIRST, SPI_MODE0));
-#endif
-#ifdef USE_RADIO2
-CC1101 radio =
+               spi0, SPISettings(spiClk, MSBFIRST, SPI_MODE0)),
     new Module(CC1101_MOD2_CSN, CC1101_MOD2_IRQ, RADIOLIB_NC, CC1101_MOD2_GPIO,
-               spi0, SPISettings(spiClk, MSBFIRST, SPI_MODE0));
-#endif
+               spi0, SPISettings(spiClk, MSBFIRST, SPI_MODE0)),
+};
+
 static unsigned char dataBuff[512];
 static unsigned char *rxPtr = dataBuff;
 static unsigned char *wrPtr = dataBuff;
@@ -124,14 +120,17 @@ typedef struct {
 const int rssi_threshold = -75;
 
 static BaseType_t cc1101_init_spi(int id) {
-  if (id == 1) {
+
+  spi0.end();
+
+  if (id == 0) {
     pinMode(CC1101_MOD2_CSN, OUTPUT);
     digitalWrite(CC1101_MOD2_CSN, HIGH);
     spi0.begin(CC1101_MOD_SCK, CC1101_MOD_MISO, CC1101_MOD_MOSI,
                CC1101_MOD1_CSN);
   }
 
-  if (id == 2) {
+  if (id == 1) {
     pinMode(CC1101_MOD1_CSN, OUTPUT);
     digitalWrite(CC1101_MOD1_CSN, HIGH);
     spi0.begin(CC1101_MOD_SCK, CC1101_MOD_MISO, CC1101_MOD_MOSI,
@@ -167,13 +166,19 @@ uint8_t cc1101_get_rxfifo_available(CC1101 *cc1101) {
 }
 
 static CC1101 *cc1101_init(int id) {
+
+  if ((id < 0) || (id > 1)) {
+    Serial.print(F("[E] [CC1101] Wrong module id ... "));
+    return NULL;
+  }
+
   cc1101_init_spi(id);
   delay(150);
+  CC1101 *cc1101 = &radios[id];
+  cc1101->begin();
 
-  radio.begin();
-
-  cc1101_get_radio_state(&radio);
-  return &radio;
+  cc1101_get_radio_state(cc1101);
+  return cc1101;
 }
 
 static int16_t cc1101_setInfiniteLengthMode(CC1101 *cc1101)
@@ -352,17 +357,13 @@ static BaseType_t cc1101_init_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
   BaseType_t idLen;
   char buf[16];
   const char *idStr = FreeRTOS_CLIGetParameter(pcCommandString, 1, &idLen);
-  memset(buf, 16, 0);
-  memcpy(buf, idStr, idLen);
 
   int id = atoi(idStr);
 
-  if ((id < 1) || (id > 2)) {
-    Serial.print(F("[E] [CC1101] Wrong module id ... "));
-    return pdFALSE;
-  }
-
   CC1101 *cc1101 = cc1101_init(id);
+
+  if (cc1101 == NULL)
+      return pdFALSE;
 
   sprintf(pcWriteBuffer, "[CC1101] Module %d initialized!\n", id);
   xWriteBufferLen = strlen(pcWriteBuffer);
@@ -383,12 +384,9 @@ static BaseType_t cc1101_scan_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
     FreeRTOS_CLIGetParameterAsInt(pcCommandString, 1, &id);
     FreeRTOS_CLIGetParameterAsInt(pcCommandString, 2, &scan_loop);
 
-    if ((id < 1) || (id > 2)) {
-      Serial.print(F("[E] [CC1101] Wrong module id ... "));
-      return pdFALSE;
-    }
-
     pCC1101 = cc1101_init(id);
+    if (pCC1101 == NULL)
+        return pdFALSE;
 
     snprintf(pcWriteBuffer, xWriteBufferLen,
              "[CC1101] Module %d initialized!\n "
@@ -440,11 +438,10 @@ static BaseType_t cc1101_receive_cmd(char *pcWriteBuffer,
 
     FreeRTOS_CLIGetParameterAsInt(pcCommandString, 1, &id);
 
-    if ((id < 1) || (id > 2)) {
-      Serial.print(F("[E] [CC1101] Wrong module id ... "));
-      return pdFALSE;
-    }
     pCC1101 = cc1101_init(id);
+    if (pCC1101 == NULL)
+        return pdFALSE;
+
     FreeRTOS_CLIGetParameterAsInt(pcCommandString, 2, (int *)&rxLength);
     rxLength = ((rxLength + len - 1) / len) * len;
   }
