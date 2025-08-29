@@ -2,13 +2,8 @@
 #include <FreeRTOS_CLI.h>
 #include <FreeRTOS_Shell.h>
 #include <RadioLib.h>
+#include <eCC1101.h>
 #include <SPI.h>
-
-#ifndef SPI_CLK_FREQ
-#define SPI_CLK_FREQ 1000000
-#endif
-
-static const int spiClk = SPI_CLK_FREQ;
 
 #define CC1101_MOD_SCK 14
 #define CC1101_MOD_MISO 12
@@ -26,16 +21,41 @@ static const int spiClk = SPI_CLK_FREQ;
 #define CC1101_MOD2_IRQ CC1101_MOD2_GDO0
 #define CC1101_MOD2_GPIO RADIOLIB_NC
 
+static SPIClass spi = SPIClass(HSPI);
+
+static struct eCC1101::s_eCC1101_pins cc1101_mod1_pins = {
+  .cs = CC1101_MOD1_CSN,
+  .rst = RADIOLIB_NC,
+  .clk = CC1101_MOD_SCK,
+  .miso = CC1101_MOD_MISO,
+  .mosi = CC1101_MOD_MOSI,
+  .gdo0 = CC1101_MOD1_GDO0, /* IRQ */
+  .gdo2 = RADIOLIB_NC       /* GPIO */
+};
+
+static struct eCC1101::s_eCC1101_pins cc1101_mod2_pins = {
+  .cs = CC1101_MOD2_CSN,
+  .rst = RADIOLIB_NC,
+  .clk = CC1101_MOD_SCK,
+  .miso = CC1101_MOD_MISO,
+  .mosi = CC1101_MOD_MOSI,
+  .gdo0 = CC1101_MOD2_GDO0, /* IRQ */
+  .gdo2 = RADIOLIB_NC       /* GPIO */
+};
+
+static const std::vector<int32_t> cs_unused_mod1 = {CC1101_MOD2_CSN};
+static const std::vector<int32_t> cs_unused_mod2 = {CC1101_MOD1_CSN};
+
+#ifndef SPI_CLK_FREQ
+#define SPI_CLK_FREQ 1000000
+#endif
+
 #define MAX(x, y) (x < y ? y : x)
 #define MIN(x, y) (x < y ? x : y)
 
-SPIClass spi0 = SPIClass(HSPI);
-
-static CC1101 radios[2] = {
-    new Module(CC1101_MOD1_CSN, CC1101_MOD1_IRQ, RADIOLIB_NC, CC1101_MOD1_GPIO,
-               spi0, SPISettings(spiClk, MSBFIRST, SPI_MODE0)),
-    new Module(CC1101_MOD2_CSN, CC1101_MOD2_IRQ, RADIOLIB_NC, CC1101_MOD2_GPIO,
-               spi0, SPISettings(spiClk, MSBFIRST, SPI_MODE0)),
+static eCC1101 ecrf_radios[] = {
+    eCC1101(cc1101_mod1_pins, spi, cs_unused_mod1, SPI_CLK_FREQ),
+    eCC1101(cc1101_mod2_pins, spi, cs_unused_mod2, SPI_CLK_FREQ),
 };
 
 static unsigned char dataBuff[512];
@@ -43,7 +63,7 @@ static unsigned char *rxPtr = dataBuff;
 static unsigned char *wrPtr = dataBuff;
 static size_t rxReceived = 0;
 static size_t rxLength;
-static CC1101 *pCC1101 = NULL;
+static eCC1101 *pCC1101 = NULL;
 
 static const uint32_t subghz_frequency_list[] = {
     /* 300 - 348 */
@@ -119,27 +139,7 @@ typedef struct {
 
 const int rssi_threshold = -75;
 
-static BaseType_t cc1101_init_spi(int id) {
-
-  spi0.end();
-
-  if (id == 0) {
-    pinMode(CC1101_MOD2_CSN, OUTPUT);
-    digitalWrite(CC1101_MOD2_CSN, HIGH);
-    spi0.begin(CC1101_MOD_SCK, CC1101_MOD_MISO, CC1101_MOD_MOSI,
-               CC1101_MOD1_CSN);
-  }
-
-  if (id == 1) {
-    pinMode(CC1101_MOD1_CSN, OUTPUT);
-    digitalWrite(CC1101_MOD1_CSN, HIGH);
-    spi0.begin(CC1101_MOD_SCK, CC1101_MOD_MISO, CC1101_MOD_MOSI,
-               CC1101_MOD2_CSN);
-  }
-  return pdFALSE;
-}
-
-uint8_t cc1101_get_radio_state(CC1101 *cc1101) {
+uint8_t cc1101_get_radio_state(eCC1101 *cc1101) {
 
   int8_t radio_state =
       cc1101->SPIgetRegValue(RADIOLIB_CC1101_REG_MARCSTATE, 4, 0);
@@ -152,7 +152,7 @@ uint8_t cc1101_get_radio_state(CC1101 *cc1101) {
   return radio_state;
 }
 
-uint8_t cc1101_get_rxfifo_available(CC1101 *cc1101) {
+uint8_t cc1101_get_rxfifo_available(eCC1101 *cc1101) {
   uint8_t bytesInFIFO =
       cc1101->SPIgetRegValue(RADIOLIB_CC1101_REG_RXBYTES, 6, 0);
 
@@ -165,23 +165,21 @@ uint8_t cc1101_get_rxfifo_available(CC1101 *cc1101) {
   return bytesInFIFO;
 }
 
-static CC1101 *cc1101_init(int id) {
+static eCC1101 *cc1101_init(int id) {
 
   if ((id < 0) || (id > 1)) {
     Serial.print(F("[E] [CC1101] Wrong module id ... "));
     return NULL;
   }
 
-  cc1101_init_spi(id);
-  delay(150);
-  CC1101 *cc1101 = &radios[id];
+  eCC1101 *cc1101 = &ecrf_radios[id];
   cc1101->begin();
 
   cc1101_get_radio_state(cc1101);
   return cc1101;
 }
 
-static int16_t cc1101_setInfiniteLengthMode(CC1101 *cc1101)
+static int16_t cc1101_setInfiniteLengthMode(eCC1101 *cc1101)
 {
     // infinite packet mode
     int16_t state = cc1101->SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL0, RADIOLIB_CC1101_LENGTH_CONFIG_INFINITE, 1, 0);
@@ -215,7 +213,7 @@ void cc1101_rx_isr(void) {
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-static BaseType_t cc1101_receiveStream(CC1101 *cc1101, unsigned char *data, size_t len) {
+static BaseType_t cc1101_receiveStream(eCC1101 *cc1101, unsigned char *data, size_t len) {
   int state;
 
   state = cc1101->startReceive();
@@ -264,7 +262,7 @@ struct s_cc1101_rf_rx_settings {
     uint8_t modulation;
 };
 
-static BaseType_t cc1101_set_rf(CC1101 *cc1101, s_cc1101_rf_rx_settings *settings) {
+static BaseType_t cc1101_set_rf(eCC1101 *cc1101, s_cc1101_rf_rx_settings *settings) {
   cc1101->setFrequency(settings->freq);
   cc1101->setBitRate(settings->br);
   cc1101->setFrequencyDeviation(settings->freqDev);
@@ -274,7 +272,7 @@ static BaseType_t cc1101_set_rf(CC1101 *cc1101, s_cc1101_rf_rx_settings *setting
   return pdFALSE;
 }
 
-static BaseType_t cc1101_receive(CC1101 *cc1101, s_cc1101_rf_rx_settings *settings, unsigned char *data, size_t len) {
+static BaseType_t cc1101_receive(eCC1101 *cc1101, s_cc1101_rf_rx_settings *settings, unsigned char *data, size_t len) {
   xHandlingTask = xTaskGetCurrentTaskHandle();
 
   int state;
@@ -298,7 +296,7 @@ static BaseType_t cc1101_receive(CC1101 *cc1101, s_cc1101_rf_rx_settings *settin
   return received;
 }
 
-static BaseType_t cc1101_scan(CC1101 *radio, FrequencyRSSI *frequency_rssi) {
+static BaseType_t cc1101_scan(eCC1101 *radio, FrequencyRSSI *frequency_rssi) {
   int rssi;
   *frequency_rssi = {.frequency_coarse = 0,
                      .rssi_coarse = -100,
@@ -360,7 +358,7 @@ static BaseType_t cc1101_init_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
 
   int id = atoi(idStr);
 
-  CC1101 *cc1101 = cc1101_init(id);
+  eCC1101 *cc1101 = cc1101_init(id);
 
   if (cc1101 == NULL)
       return pdFALSE;
@@ -371,7 +369,7 @@ static BaseType_t cc1101_init_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
   return pdFALSE;
 }
 
-FREERTOS_SHELL_CMD_REGISTER("init", "Init CC1101", cc1101_init_cmd, 1);
+FREERTOS_SHELL_CMD_REGISTER("init", "init <radio id>", cc1101_init_cmd, 1);
 
 static BaseType_t cc1101_scan_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
                                   const char *pcCommandString) {
@@ -427,7 +425,7 @@ static BaseType_t cc1101_scan_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
 
   return pdFALSE;
 }
-FREERTOS_SHELL_CMD_REGISTER("scan", "Scan CC1101", cc1101_scan_cmd, 2);
+FREERTOS_SHELL_CMD_REGISTER("scan", "scan <radio id> <scan loop>", cc1101_scan_cmd, 2);
 
 static BaseType_t cc1101_receive_cmd(char *pcWriteBuffer,
                                      size_t xWriteBufferLen,
@@ -483,4 +481,4 @@ static BaseType_t cc1101_receive_cmd(char *pcWriteBuffer,
 
   return pdTRUE;
 }
-FREERTOS_SHELL_CMD_REGISTER("rx", "Receive on CC1101", cc1101_receive_cmd, 2);
+FREERTOS_SHELL_CMD_REGISTER("rx", "rx <radio id> <length>", cc1101_receive_cmd, 2);
