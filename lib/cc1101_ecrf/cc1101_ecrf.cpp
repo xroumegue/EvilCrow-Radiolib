@@ -50,6 +50,7 @@ static const std::vector<int32_t> cs_unused_mod2 = {CC1101_MOD1_CSN};
 #define SPI_CLK_FREQ 1000000
 #endif
 
+#define ALIGN(x, y) (((x + y - 1) / y) * y) 
 #define MAX(x, y) (x < y ? y : x)
 #define MIN(x, y) (x < y ? x : y)
 
@@ -58,11 +59,8 @@ static eCC1101 ecrf_radios[] = {
     eCC1101(cc1101_mod2_pins, spi, cs_unused_mod2, SPI_CLK_FREQ),
 };
 
-static unsigned char dataBuff[512];
-static unsigned char *rxPtr = dataBuff;
-static unsigned char *wrPtr = dataBuff;
-static size_t rxReceived = 0;
-static size_t rxLength;
+static ssize_t rxReceived = 0;
+static ssize_t rxLength;
 static eCC1101 *pCC1101 = NULL;
 
 static eCC1101 *cc1101_init(int id) {
@@ -78,86 +76,8 @@ static eCC1101 *cc1101_init(int id) {
   return cc1101;
 }
 
-static TaskHandle_t xHandlingTask = NULL;
-
-#define TX_BIT 0x01
-#define RX_BIT 0x02
 
 #define LONG_TIME 0xffff
-
-void cc1101_rx_isr(void) {
-  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  // Serial.print(F("[CC1101] IRQ!\n"));
-
-  xTaskNotifyFromISR(xHandlingTask, RX_BIT, eSetBits,
-                     &xHigherPriorityTaskWoken);
-  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
-
-static BaseType_t cc1101_receiveStream(eCC1101 *cc1101, unsigned char *data, size_t len) {
-  int state;
-
-  state = cc1101->startReceive();
-  const TickType_t xMaxBlockTime = pdMS_TO_TICKS(5000);
-  size_t remaining = len;
-  while (remaining) {
-    uint32_t ulNotifiedValue = 0;
-    BaseType_t xResult;
-    xResult = xTaskNotifyWait(pdFALSE,          /* Don't clear bits on entry. */
-                              ULONG_MAX,        /* Clear all bits on exit. */
-                              &ulNotifiedValue, /* Stores the notified value. */
-                              xMaxBlockTime);
-
-    if (xResult == pdPASS) {
-      if ((ulNotifiedValue & RX_BIT) != 0) {
-#if 1
-        uint8_t bytesInFIFO =
-            MIN(cc1101->get_rxfifo_available(), remaining);
-        cc1101->SPIreadRegisterBurst(RADIOLIB_CC1101_REG_FIFO, bytesInFIFO,
-                                     data);
-        data += bytesInFIFO;
-        remaining -= bytesInFIFO;
-#else
-        uint8_t lbuf[pktLen];
-        cc1101->readData(lbuf, pktLen);
-        size_t len = MIN(pktLen, remaining);
-        memcpy(data, lbuf, len);
-        data += len;
-        remaining -= len;
-
-#endif
-      }
-    } else {
-      break;
-    }
-  }
-  cc1101->standby();
-  return len - remaining;
-}
-
-static BaseType_t cc1101_receive(eCC1101 *cc1101, s_cc1101_rf_rx_settings *settings, unsigned char *data, size_t len) {
-  xHandlingTask = xTaskGetCurrentTaskHandle();
-
-  int state;
-
-  cc1101->setPromiscuousMode(true, false);
-  cc1101->setPacketReceivedAction(cc1101_rx_isr);
-  state = cc1101->SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL1,
-                                 RADIOLIB_CC1101_APPEND_STATUS_OFF, 3, 3);
-
-  state = cc1101->set_rf(settings);
-  state = cc1101->disableAddressFiltering();
-  cc1101->SPIsetRegValue(RADIOLIB_CC1101_REG_MCSM1, RADIOLIB_CC1101_RXOFF_RX, 3,
-                         2);
-  cc1101->setInfiniteLengthMode();
-
-  size_t received = cc1101_receiveStream(cc1101, data, len);
-  cc1101->clearPacketReceivedAction();
-  cc1101->SPIsendCommand(RADIOLIB_CC1101_CMD_FLUSH_RX);
-  cc1101->setPromiscuousMode(false, false);
-
-  return received;
-}
 
 static BaseType_t cc1101_init_cmd(char *pcWriteBuffer, size_t xWriteBufferLen,
                                   const char *pcCommandString) {
@@ -240,7 +160,8 @@ FREERTOS_SHELL_CMD_REGISTER("scan", "scan <radio id> <scan loop>", cc1101_scan_c
 static BaseType_t cc1101_receive_cmd(char *pcWriteBuffer,
                                      size_t xWriteBufferLen,
                                      const char *pcCommandString) {
-  size_t len = sizeof(dataBuff);
+  const size_t minLength = 32;
+  const size_t maxLineLength = 128;
   if (pCC1101 == NULL) { 
     int id;
 
@@ -251,44 +172,51 @@ static BaseType_t cc1101_receive_cmd(char *pcWriteBuffer,
         return pdFALSE;
 
     FreeRTOS_CLIGetParameterAsInt(pcCommandString, 2, (int *)&rxLength);
-    rxLength = ((rxLength + len - 1) / len) * len;
+    rxLength = ALIGN(rxLength, minLength);
+
+    struct s_cc1101_rf_rx_settings settings433M250kASK = {
+      .freq = 433.92,
+      .br = 10.0,
+      .freqDev = 0.0,
+      .rxBw = 250.0,
+      .modulation = RADIOLIB_CC1101_MOD_FORMAT_ASK_OOK,
+    };
+    pCC1101->startRawReceive(&settings433M250kASK);
   }
  
-  while ((wrPtr > rxPtr) && (xWriteBufferLen >= 2)) {
-    if (rxPtr == dataBuff) {
-          snprintf(pcWriteBuffer, xWriteBufferLen, "\n[%02u] ", (unsigned) (rxReceived / len));
-          pcWriteBuffer += 6;
-          xWriteBufferLen += 6;
-      }
+  if ((rxReceived % maxLineLength) == 0 ) {
+    snprintf(pcWriteBuffer, xWriteBufferLen, "\n[%02u] ", (unsigned) (rxReceived / maxLineLength));
+    pcWriteBuffer += 6;
+    xWriteBufferLen += 6;
+  }
+
+  char *rxPtr = pcWriteBuffer + xWriteBufferLen / 2;
+  //size_t xferLen = ALIGN(MIN(xWriteBufferLen / 2, rxLength), minLength);
+  size_t xferLen = MIN(xWriteBufferLen / 2, rxLength);
+
+  int len = pCC1101->rawReceive((uint8_t *)rxPtr, xferLen, pdMS_TO_TICKS(5000));
+  //char buf[64];
+  //snprintf(buf, sizeof(buf), "[%d]\n", len);
+  //Serial.print(buf);
+
+  if (len < 0) {
+    Serial.println("Error");
+  }
+
+  rxReceived += len;
+  while (len--) {
     snprintf(pcWriteBuffer, xWriteBufferLen, "%02x", *rxPtr++);
     pcWriteBuffer += 2;
     xWriteBufferLen -= 2;
   }
 
-  if (rxPtr >= (dataBuff + len)) {
-    rxPtr = dataBuff;
-    wrPtr = dataBuff;
-    if (rxReceived >= rxLength) {
-      rxReceived = 0;
-      pCC1101 = NULL;
-      return pdFALSE;
-    }
+  if ((rxLength - rxReceived) > 0) {
+    return pdTRUE;
+  } else {
+    pCC1101->stopRawReceive();
+    pCC1101 = NULL;
+    rxReceived = 0;
+    return pdFALSE;
   }
-
-  struct s_cc1101_rf_rx_settings settings433M250kASK = {
-    .freq = 433.92,
-    .br = 10.0,
-    .freqDev = 0.0,
-    .rxBw = 250.0,
-    .modulation = RADIOLIB_CC1101_MOD_FORMAT_ASK_OOK,
-  };
-
-  if ((rxReceived == 0) || (wrPtr == rxPtr)) {
-    size_t received = cc1101_receive(pCC1101, &settings433M250kASK, dataBuff, len);
-    wrPtr += received;
-    rxReceived += received;
-  }
-
-  return pdTRUE;
 }
 FREERTOS_SHELL_CMD_REGISTER("rx", "rx <radio id> <length>", cc1101_receive_cmd, 2);
