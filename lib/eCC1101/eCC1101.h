@@ -3,6 +3,13 @@
 #include <RadioLib.h>
 //#include <CC1101.h>
 
+#define RX_BIT  BIT(0)
+#define TX_BIT  BIT(1)
+#define PKT_BIT BIT(6)
+#define RAW_BIT BIT(7)
+
+#define tskRX_PRIORITY (configMAX_PRIORITIES - 10)
+
 #define DEFAULT_CC1101_SPI SPIClass(HSPI)
 
 typedef struct {
@@ -43,18 +50,45 @@ public:
 
   uint8_t get_rxfifo_available(void);
   uint8_t get_radio_state(void);
-  int16_t setInfiniteLengthMode();
+  int16_t setInfiniteLengthMode(void);
   BaseType_t set_rf(s_cc1101_rf_rx_settings *settings);
   BaseType_t scan(FrequencyRSSI *frequency_rssi, int rssi_threshold = -75);
+  int16_t startRawReceive(struct s_cc1101_rf_rx_settings *settings);
+  int16_t stopRawReceive(void);
+  int16_t rawReceive(uint8_t *data, size_t len, TickType_t xTicksToWait = pdMS_TO_TICKS(5000));
+  void setPacketReceivedAction(void (*isr)(void*pObj));
+  void setGdo0Action(void (*func)(void* pObj), uint32_t dir);
+  TaskHandle_t get_rx_task() {
+    return _rx_task;
+  }
 
 private:
-  void rx_isr_cb(void);
-  void rx_task_cb(void *pv);
-  TaskHandle_t rx_task;
+  uint8_t _rxFifo[64];
+  static void _rx_thread(void *pv) {
+    eCC1101 *instance = static_cast<eCC1101*>(pv);
+    instance->_rx_cb();
+  }
+
+  static void _rx_isr_cb(void *pObj) {
+    eCC1101 *instance = static_cast<eCC1101*>(pObj);
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+#if CC1101_DEBUG
+    Serial.print(F("[CC1101] IRQ!\n"));
+#endif
+    xTaskNotifyFromISR(instance->get_rx_task(), RX_BIT | RAW_BIT, eSetBits, &xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+  }
+
+
+  void _rx_cb();
+  TaskHandle_t _rx_task;
+  size_t _rxBufferSize;
+  size_t _rxBufferTriggerLevel;
+  StreamBufferHandle_t _rxStreamBuffer;
   SPIClass *_spi;
   struct s_eCC1101_pins _pins;
   std::vector<int32_t> _cs_unused;
-  StreamBufferHandle_t rxBuffer;
 };
 #endif /*  _RADIOLIB_ECC1101_H */
 

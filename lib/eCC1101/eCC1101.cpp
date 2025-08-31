@@ -1,28 +1,56 @@
 #include "eCC1101.h"
+#include "portmacro.h"
+
+#define MAX(x, y) (x < y ? y : x)
+#define MIN(x, y) (x < y ? x : y)
 
 eCC1101::eCC1101(struct s_eCC1101_pins& pins, SPIClass& spi, const std::vector<int32_t> cs_unused, uint32_t spiClk):
-        CC1101(new Module(pins.cs, pins.gdo0, pins.rst, pins.gdo2, spi, SPISettings(spiClk, MSBFIRST, SPI_MODE0))), _spi(&spi), _pins(pins), _cs_unused(cs_unused) {
+        CC1101(new Module(pins.cs, pins.gdo0, pins.rst, pins.gdo2, spi, SPISettings(spiClk, MSBFIRST, SPI_MODE0))),
+        _spi(&spi), _pins(pins), _cs_unused(cs_unused),
+        _rxBufferSize(1024), _rxBufferTriggerLevel(32) {
+
+    _rxStreamBuffer = xStreamBufferCreate(_rxBufferSize, _rxBufferTriggerLevel );
+
+    xTaskCreate(
+        _rx_thread,
+        "eCC1101 RX",
+        4096,
+        (void *) this,
+        tskRX_PRIORITY,
+        &_rx_task
+    );
 }
 
+void eCC1101::setPacketReceivedAction(void (*func)(void* pObj))
+{
+    setGdo0Action(func, this->mod->hal->GpioInterruptRising);
+}
+
+void eCC1101::setGdo0Action(void (*func)(void* pObj), uint32_t dir) {
+  attachInterruptArg(this->mod->hal->pinToInterrupt(this->mod->getIrq()), func, this, dir);
+}
+
+
 int16_t eCC1101::begin(float freq, float br, float freqDev, float rxBw, int8_t pwr, uint8_t preambleLength){
-        char buf[128];
-        /* Unselect the others SPI Slaves */ 
-        for (auto it = _cs_unused.begin(); it != _cs_unused.end(); ++it) {
-                snprintf(buf, 128, "Unselect pin %d\n", *it);
-                Serial.print(buf);
-                pinMode(*it, OUTPUT);
-                digitalWrite(*it, HIGH);
-        }
+    char buf[128];
+    /* Unselect the others SPI Slaves */ 
+    for (auto it = _cs_unused.begin(); it != _cs_unused.end(); ++it) {
+            snprintf(buf, 128, "Unselect pin %d\n", *it);
+            Serial.print(buf);
+            pinMode(*it, OUTPUT);
+            digitalWrite(*it, HIGH);
+    }
 
-        _spi->end();
+    _spi->end();
 
-        /*Initialize the SPI pins for THIS device */ 
-        _spi->begin(_pins.clk, _pins.miso, _pins.mosi, _pins.cs);
-        snprintf(buf, 128, "SPI pins: clk: %d, miso: %d, mosi: %d, cs: %d\n", _pins.clk, _pins.miso, _pins.mosi, _pins.cs);
-        Serial.print(buf);
-        delay(150);
-        Serial.println("Module eCC1101 Initialized ");
-        return CC1101::begin(freq, br, freqDev, rxBw, pwr, preambleLength);
+    /*Initialize the SPI pins for THIS device */ 
+    _spi->begin(_pins.clk, _pins.miso, _pins.mosi, _pins.cs);
+    snprintf(buf, 128, "SPI pins: clk: %d, miso: %d, mosi: %d, cs: %d\n", _pins.clk, _pins.miso, _pins.mosi, _pins.cs);
+    Serial.print(buf);
+    delay(150);
+    Serial.println("Module eCC1101 Initialized ");
+
+    return CC1101::begin(freq, br, freqDev, rxBw, pwr, preambleLength);
 }
 
 BaseType_t eCC1101::scan(FrequencyRSSI *frequency_rssi, int rssi_threshold) {
@@ -195,20 +223,170 @@ BaseType_t eCC1101::set_rf(s_cc1101_rf_rx_settings *settings) {
   return pdFALSE;
 }
 
-
-
-#define TX_BIT 0x01
-#define RX_BIT 0x02
-void eCC1101::rx_isr_cb(void)
+void eCC1101::_rx_cb()
 {
-  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  // Serial.print(F("[CC1101] IRQ!\n"));
-  xTaskNotifyFromISR(rx_task, RX_BIT, eSetBits, &xHigherPriorityTaskWoken);
-  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
-void eCC1101::rx_task_cb(void *pv)
-{
+  const TickType_t x1000ms = pdMS_TO_TICKS(1000);
+  const TickType_t x100ms = pdMS_TO_TICKS(100);
   for(;;) {
-  
+    uint32_t ulNotifiedValue = 0;
+    BaseType_t xResult;
+    xResult = xTaskNotifyWait(pdFALSE,          /* Don't clear bits on entry. */
+                              ULONG_MAX,        /* Clear all bits on exit. */
+                              &ulNotifiedValue, /* Stores the notified value. */
+                              x1000ms);
+
+#if CC1101_DEBUG
+    Serial.print(F("[CC1101] Thread Wakeup!\n"));
+#endif
+    if (xResult == pdPASS) {
+      if ((ulNotifiedValue & RX_BIT) != 0) {
+        if ((ulNotifiedValue & RAW_BIT) != 0) {
+            uint8_t bytesInFIFO = get_rxfifo_available();
+            SPIreadRegisterBurst(RADIOLIB_CC1101_REG_FIFO, bytesInFIFO, _rxFifo);
+            size_t bytesSent = xStreamBufferSend(_rxStreamBuffer,
+                          _rxFifo,
+                          bytesInFIFO,
+                          x100ms);
+#if CC1101_DEBUG
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%d/%d\n", bytesSent, bytesInFIFO);
+            Serial.print(buf);
+#endif
+            configASSERT(bytesSent == bytesInFIFO);
+        }
+        if ((ulNotifiedValue & PKT_BIT) != 0) {
+        //    uint8_t lbuf[pktLen];
+        //    readData(lbuf, pktLen);
+        //    size_t len = MIN(pktLen, remaining);
+        //    memcpy(data, lbuf, len);
+        //    data += len;
+        //    remaining -= len;
+        }
+      }
+    } 
   }
 }
+
+int16_t eCC1101::startRawReceive(struct s_cc1101_rf_rx_settings *settings) {
+  setPromiscuousMode(true, false);
+  setPacketReceivedAction(eCC1101::_rx_isr_cb);
+  SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL1, RADIOLIB_CC1101_APPEND_STATUS_OFF, 3, 3);
+  set_rf(settings);
+  disableAddressFiltering();
+  SPIsetRegValue(RADIOLIB_CC1101_REG_MCSM1, RADIOLIB_CC1101_RXOFF_RX, 3, 2);
+  setInfiniteLengthMode();
+
+  startReceive();
+
+  return 0;
+}
+
+int16_t eCC1101::rawReceive(uint8_t *data, size_t len, TickType_t xTicksToWait) {
+    ssize_t remaining = len;
+    TickType_t startTime = xTaskGetTickCount();
+
+#if CC1101_DEBUG
+    char buf[64];
+    snprintf(buf, sizeof(buf), "RX: %u\n", len);
+    Serial.print(buf);
+#endif
+
+    while (remaining > 0) {
+        size_t received = xStreamBufferReceive( _rxStreamBuffer,
+                             data,
+                             remaining,
+                             xTicksToWait);
+#if CC1101_DEBUG
+    char buf[64];
+    snprintf(buf, sizeof(buf), "RX: %u %u %u\n", len, received, remaining);
+    Serial.print(buf);
+#endif
+
+        TickType_t endTime = xTaskGetTickCount();
+
+        if (received < 0)
+            break;
+        data += received;
+        remaining -= received;
+        if ((endTime - startTime) > xTicksToWait) {
+            break;
+        }
+    }
+
+    return (len - remaining);
+}
+
+int16_t eCC1101::stopRawReceive() {
+  clearPacketReceivedAction();
+  SPIsendCommand(RADIOLIB_CC1101_CMD_FLUSH_RX);
+  setPromiscuousMode(false, false);
+  return 0;
+}
+
+#if 0
+static BaseType_t cc1101_receiveStream(eCC1101 *cc1101, unsigned char *data, size_t len) {
+  int state;
+
+  state = cc1101->startReceive();
+  const TickType_t xMaxBlockTime = pdMS_TO_TICKS(5000);
+  size_t remaining = len;
+  while (remaining) {
+    uint32_t ulNotifiedValue = 0;
+    BaseType_t xResult;
+    xResult = xTaskNotifyWait(pdFALSE,          /* Don't clear bits on entry. */
+                              ULONG_MAX,        /* Clear all bits on exit. */
+                              &ulNotifiedValue, /* Stores the notified value. */
+                              xMaxBlockTime);
+
+    if (xResult == pdPASS) {
+      if ((ulNotifiedValue & RX_BIT) != 0) {
+#if 1
+        uint8_t bytesInFIFO =
+            MIN(cc1101->get_rxfifo_available(), remaining);
+        cc1101->SPIreadRegisterBurst(RADIOLIB_CC1101_REG_FIFO, bytesInFIFO,
+                                     data);
+        data += bytesInFIFO;
+        remaining -= bytesInFIFO;
+#else
+        uint8_t lbuf[pktLen];
+        cc1101->readData(lbuf, pktLen);
+        size_t len = MIN(pktLen, remaining);
+        memcpy(data, lbuf, len);
+        data += len;
+        remaining -= len;
+
+#endif
+      }
+    } else {
+      break;
+    }
+  }
+  cc1101->standby();
+  return len - remaining;
+}
+
+static BaseType_t c1101_receive(eCC1101 *cc1101, s_cc1101_rf_rx_settings *settings, unsigned char *data, size_t len) {
+  xHandlingTask = xTaskGetCurrentTaskHandle();
+
+  int state;
+
+  cc1101->setPromiscuousMode(true, false);
+  cc1101->setPacketReceivedAction(_rx_isr_cb);
+  state = cc1101->SPIsetRegValue(RADIOLIB_CC1101_REG_PKTCTRL1,
+                                 RADIOLIB_CC1101_APPEND_STATUS_OFF, 3, 3);
+
+  state = cc1101->set_rf(settings);
+  state = cc1101->disableAddressFiltering();
+  cc1101->SPIsetRegValue(RADIOLIB_CC1101_REG_MCSM1, RADIOLIB_CC1101_RXOFF_RX, 3,
+                         2);
+  cc1101->setInfiniteLengthMode();
+
+  size_t received = cc1101_receiveStream(cc1101, data, len);
+  cc1101->clearPacketReceivedAction();
+  cc1101->SPIsendCommand(RADIOLIB_CC1101_CMD_FLUSH_RX);
+  cc1101->setPromiscuousMode(false, false);
+
+  return received;
+}
+
+#endif
