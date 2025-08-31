@@ -26,7 +26,7 @@ void setup() {
     "Toggle LED",   // Name of the task (for debugging)
     1008,            // Stack size (bytes)
     NULL,            // Parameter to pass
-    1,               // Task priority
+    2,               // Task priority
     NULL             // Task handle
   );
 
@@ -35,11 +35,9 @@ void setup() {
     "Shell",
     4096,
     NULL,
-    10,
+    configMAX_PRIORITIES - 12,
     NULL
   );
-
-
 }
 
 void loop() {
